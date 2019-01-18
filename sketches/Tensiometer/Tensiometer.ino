@@ -44,12 +44,13 @@ int EEPROM_START_ADDRESS = 0;
 #include <ArduinoJson.h>
 
 uint16_t	 EEPROM_INITIALIZED = 0xBFFE;
-String title = "Tensio Sensor V1.0";
+String title = "Tensio Sensor V1.1";
 
 struct __attribute__ ((packed)) _sensor {
 
 	int			initID;						/* ID to check if EEPROM contains config */
-	char		sensor_name[32];			/* Sensor Name, used in MQTT Topic */
+	uint16_t	interval;					/* MQTT Send interval in Seconds */
+	char		name[32];					/* Sensor Name, used in MQTT Topic */
 	char		topic[32];					/* MQTT publish Topic */
 	boolean		mqtt_enabled;				/* Enable / Disable MQTT */
 	char		mqtt_server_ip[15];			/* MQTT Server IP */
@@ -72,8 +73,7 @@ const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
 #define HTTP_PORT	80
 
 #define SENSOR_PORT A0			/* Analog Sensor Port */
-#define DELAY_IN_MINUTES	1	/* Delay between sending Sensor Values */
-#define SECONDS_PER_MINUTE	10  /* Number of seconds you want in a minute */
+uint32_t	delayTimer	= 0;
 
 
 #define   AVERAGE_COUNT 50			/* Number of Samples for Average */
@@ -109,7 +109,7 @@ void readEEProm()
 	
 	updateTopic();
 
-	Serial.printf("Sensor => %s\n", sensor.sensor_name);
+	Serial.printf("Sensor => %s\n", sensor.name);
 	Serial.printf("MQTT Server => %s:%d\n", sensor.mqtt_server_ip, sensor.mqtt_port);
 	
 }
@@ -138,7 +138,8 @@ void initEEPROM(bool reset = false)
 		// Initialize the EEProm  with some defaults
 		sensor.initID			= EEPROM_INITIALIZED;
 
-		strcpy(sensor.sensor_name, "Carolina Reaper");
+		strcpy(sensor.name, "Carolina Reaper");
+		sensor.interval = 300;
 		strcpy(sensor.mqtt_server_ip, "127.0.0.1");
 		strcpy(sensor.mqtt_username, "");
 		strcpy(sensor.mqtt_password, "");
@@ -216,7 +217,7 @@ void reconnect_mqttserver() {
 	if ( sensor.mqtt_enabled )
 	{
 		
-		if (MQTT_Client.connect(sensor.sensor_name, sensor.mqtt_username, sensor.mqtt_password)) {
+		if (MQTT_Client.connect(sensor.name, sensor.mqtt_username, sensor.mqtt_password)) {
 			if ( MQTT_Client.subscribe(publish_topic) )
 			{
 				Serial.printf("Subscribed to %s\n", publish_topic );
@@ -240,16 +241,13 @@ void config()
 	int args = httpServer.args();
 	
 	
-	Serial.printf("Number of Args %d\n", httpServer.args());
-	for ( uint8_t i = 0; i < httpServer.args(); i++ )
-	Serial.printf("%s: %s\n", httpServer.argName(i).c_str(), httpServer.arg(i).c_str() );
-	
 	if ( args >= 6 )
 	{
 		
 		Serial.println("Config Change Requested");
 
-		httpServer.arg("sn").toCharArray(sensor.sensor_name, sizeof sensor.sensor_name);
+		httpServer.arg("sn").toCharArray(sensor.name, sizeof sensor.name);
+		sensor.interval = httpServer.arg("si").toInt();
 
 		httpServer.arg("mu").toCharArray(sensor.mqtt_username, sizeof sensor.mqtt_username);
 		httpServer.arg("mpw").toCharArray(sensor.mqtt_password, sizeof sensor.mqtt_password);
@@ -263,6 +261,7 @@ void config()
 		writeEEProm();
 		
 		updateTopic();
+		delayTimer = 0;
 	}
 
 	/* HTML Form for Config */	
@@ -273,7 +272,8 @@ void config()
 	<table>\
 	<tr><td>Sensor Reading</td><td><b><i>" + String( get_mbar() ) + "</b></i> mBar</td></tr>\
 	<tr><td colspan='2'></td></tr>\
-	<tr><td>Sensor Name</td><td><input name='sn' type='text' maxlength='32' value='" + sensor.sensor_name +"'></td></tr>\
+	<tr><td>Sensor Name</td><td><input name='sn' type='text' maxlength='32' value='" + sensor.name +"'></td></tr>\
+	<tr><td>Sensor Interval</td><td><input name='si' min='10' max='65534' type='number' value='"+ sensor.interval +"'> Seconds</td></tr>\
 	<tr><td colspan='2'></td></tr>\
 	<tr><td>Enable MQTT</td><td><input name='me' type='checkbox' value=''"+ mqqt_enabled +"></td></tr>\
 	<tr><td colspan='2'></td></tr>\
@@ -314,7 +314,7 @@ void handleRoot() {
 void updateTopic()
 {
 	
-	sprintf(publish_topic,"%s/%s", sensor.topic, sensor.sensor_name);
+	sprintf(publish_topic,"%s/%s", sensor.topic, sensor.name);
 	Serial.printf("Update Topic To %s\n", publish_topic);
 
 	MQTT_Client.disconnect(); // Will force reconnect to MQTT with new topic
@@ -344,8 +344,6 @@ void setup()
 
 	MQTT_Client.setServer(sensor.mqtt_server_ip, sensor.mqtt_port);
 
-	updateTopic();
-
 	pinMode(SENSOR_PORT, INPUT);
 
 	delay(20);  /* Sensor warm up */
@@ -357,14 +355,13 @@ void setup()
 
 void loop() {
 	
-	static uint32_t	delayTimer	= 0;
 	static uint8_t  average_ndx	= 0;
 
 
 	if  ( millis() > delayTimer )
 	{
 		
-		if (!MQTT_Client.connected())
+		if (! MQTT_Client.connected() && sensor.mqtt_enabled)
 		{
 			Serial.println("MQTT Client Not Connected");
 			reconnect_mqttserver();
@@ -372,8 +369,8 @@ void loop() {
 			publish_to_MQTT();
 		}
 		
-		delayTimer = (  DELAY_IN_MINUTES * SECONDS_PER_MINUTE * 1000 ) + millis();
-		Serial.printf("Sensor [%s] - %d mBar\n", sensor.sensor_name, average_reading());
+		delayTimer = (  sensor.interval * 1000 ) + millis();
+		Serial.printf("Sensor [%s] - %d mBar\n", sensor.name, average_reading());
 	}
 	
 	httpServer.handleClient();
